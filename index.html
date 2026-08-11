@@ -199,10 +199,10 @@
 /* ---------------- Broker config (from device firmware) ---------------- */
 const urlParams = new URLSearchParams(window.location.search);
 
-const MQTT_HOST = urlParams.get('host') || "a577166943ba48348341f49fb1c081c9.s1.eu.hivemq.cloud";
+const MQTT_HOST = urlParams.get('host') || "";
 const MQTT_WS_URL = MQTT_HOST ? `wss://${MQTT_HOST}:8884/mqtt` : "";
-const MQTT_USER = urlParams.get('user') || "seismic_user";
-const MQTT_PASS = urlParams.get('pass') || "87654321";
+const MQTT_USER = urlParams.get('user') || "";
+const MQTT_PASS = urlParams.get('pass') || "";
 
 const TOPICS = {
   telemetry: "seismic/telemetry",
