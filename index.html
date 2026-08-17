@@ -216,9 +216,9 @@
     </div>
     <div class="badge-row">
       <button class="btn-export" onclick="exportTelemetryCSV()">Export CSV</button>
+      <button class="btn-logout" onclick="logout()">Logout</button>
       <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
       <div class="badge relay-off" id="badge-relay"><span class="dot"></span><span id="relay-text">Relay Idle</span></div>
-      <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
   </header>
 
@@ -259,8 +259,13 @@
 
 <script>
 /* Memory Storage Buffers */
+// These previously grew forever - at ~1 telemetry message/sec that's
+// ~86,400 objects/day with no cap, which will slow down or crash a tab
+// left open for a long monitoring session. Now capped and trimmed FIFO.
 const telemetryRecords = [];
 const eventLogRecords = [];
+const MAX_TELEMETRY_RECORDS = 5000;  // ~83 min of telemetry at 1/sec
+const MAX_EVENT_RECORDS = 2000;
 
 const TOPICS = {
   telemetry: "seismic/telemetry",
@@ -381,10 +386,20 @@ function addLog(kind, message){
   const timeStr = new Date().toLocaleTimeString();
   const isoStr = new Date().toLocaleString();
 
+  // Built with textContent (not innerHTML) so a message string containing
+  // HTML/script - e.g. from a spoofed or misconfigured MQTT publisher -
+  // renders as plain text instead of executing.
   const entry = document.createElement('div');
   entry.className = 'log-entry ' + kind;
-  entry.innerHTML = `<span class="t">${timeStr}</span><span class="m">${message}</span>`;
-  
+  const tSpan = document.createElement('span');
+  tSpan.className = 't';
+  tSpan.textContent = timeStr;
+  const mSpan = document.createElement('span');
+  mSpan.className = 'm';
+  mSpan.textContent = message;
+  entry.appendChild(tSpan);
+  entry.appendChild(mSpan);
+
   // Prepend to top of UI list for descending order
   list.prepend(entry);
 
@@ -398,6 +413,7 @@ function addLog(kind, message){
     type: kind.toUpperCase(),
     message: message
   });
+  if (eventLogRecords.length > MAX_EVENT_RECORDS) eventLogRecords.pop();
 
   // Save entry into sessionStorage
   saveLogToStorage({ time: timeStr, kind: kind, message: message, isoTimestamp: isoStr });
@@ -417,7 +433,14 @@ function restoreSavedLogs() {
   savedLogs.forEach(log => {
     const entry = document.createElement('div');
     entry.className = 'log-entry ' + log.kind;
-    entry.innerHTML = `<span class="t">${log.time}</span><span class="m">${log.message}</span>`;
+    const tSpan = document.createElement('span');
+    tSpan.className = 't';
+    tSpan.textContent = log.time;
+    const mSpan = document.createElement('span');
+    mSpan.className = 'm';
+    mSpan.textContent = log.message;
+    entry.appendChild(tSpan);
+    entry.appendChild(mSpan);
     list.appendChild(entry);
 
     eventLogRecords.push({
@@ -442,6 +465,15 @@ function setRelay(active){
   document.getElementById('relay-text').textContent = active ? 'Relay Engaged' : 'Relay Idle';
 }
 
+// Prevents CSV/formula injection: if a field (sourced from MQTT payloads)
+// starts with =, +, -, or @, Excel/Sheets can interpret it as a formula
+// when the file is opened. Prefixing with a tab neutralizes that while
+// leaving the visible text unchanged.
+function sanitizeCsvField(value) {
+  const str = String(value);
+  return /^[=+\-@]/.test(str) ? '\t' + str : str;
+}
+
 /* Option A Export Implementation: Separate Files for Events and Telemetry */
 function exportTelemetryCSV() {
   if (telemetryRecords.length === 0 && eventLogRecords.length === 0) {
@@ -455,7 +487,7 @@ function exportTelemetryCSV() {
   if (eventLogRecords.length > 0) {
     let eventCsv = "Timestamp,Event Type,Description\n";
     eventLogRecords.forEach(e => {
-      const cleanMessage = e.message.replace(/"/g, '""');
+      const cleanMessage = sanitizeCsvField(e.message).replace(/"/g, '""');
       eventCsv += `"${e.timestamp}","${e.type}","${cleanMessage}"\n`;
     });
     downloadCSV(eventCsv, `altogram_event_logs_${timestamp}.csv`);
@@ -465,7 +497,8 @@ function exportTelemetryCSV() {
   if (telemetryRecords.length > 0) {
     let telemetryCsv = "Timestamp,PGA_g,Ratio,Intensity\n";
     telemetryRecords.forEach(r => {
-      telemetryCsv += `"${r.timestamp}",${r.pga},${r.ratio},"${r.intensity}"\n`;
+      const cleanIntensity = sanitizeCsvField(r.intensity).replace(/"/g, '""');
+      telemetryCsv += `"${r.timestamp}",${r.pga},${r.ratio},"${cleanIntensity}"\n`;
     });
     downloadCSV(telemetryCsv, `altogram_telemetry_${timestamp}.csv`);
   }
@@ -614,6 +647,7 @@ function initMQTT(host, user, pass) {
           ratio: data.ratio || 0,
           intensity: data.intensity || ""
         });
+        if (telemetryRecords.length > MAX_TELEMETRY_RECORDS) telemetryRecords.shift();
       }
 
       if (topic === TOPICS.alert) {
