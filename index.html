@@ -33,6 +33,35 @@
     background-size:28px 28px;
   }
 
+  /* ---------- AUTHENTICATION SCREEN ---------- */
+  #auth-overlay{
+    position:fixed;inset:0;background:var(--ink);z-index:100;
+    display:flex;align-items:center;justify-content:center;
+  }
+  #auth-overlay.hidden{display:none;}
+  .auth-card{
+    background:var(--panel);border:1px solid var(--line);
+    padding:32px;border-radius:6px;width:100%;max-width:380px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.5);
+  }
+  .auth-card h2{font-family:var(--disp);margin:0 0 6px 0;font-size:20px;color:var(--amber);}
+  .auth-card p{font-size:12px;color:var(--text-dim);margin:0 0 20px 0;}
+  .auth-field{margin-bottom:14px;}
+  .auth-field label{display:block;font-size:11px;color:var(--text-dim);margin-bottom:4px;text-transform:uppercase;}
+  .auth-field input{
+    width:100%;background:var(--panel-2);border:1px solid var(--line);
+    color:var(--text);padding:10px;border-radius:3px;font-family:var(--mono);font-size:13px;
+    outline:none;
+  }
+  .auth-field input:focus{border-color:var(--amber);}
+  .auth-btn{
+    width:100%;padding:10px;background:var(--amber);color:var(--ink);
+    border:none;border-radius:3px;font-family:var(--disp);font-weight:700;
+    cursor:pointer;margin-top:10px;text-transform:uppercase;letter-spacing:.05em;
+  }
+  .auth-btn:hover{background:#e0951d;}
+  .auth-error{color:var(--red);font-size:11px;margin-top:10px;display:none;}
+
   /* ---------- LOADING SCREEN ---------- */
   #loading{
     position:fixed;inset:0;background:var(--ink);z-index:50;
@@ -74,7 +103,16 @@
   .badge.relay-on .dot{background:var(--red);box-shadow:0 0 8px var(--red);animation:pulse 1s infinite;}
   .badge.relay-off .dot{background:var(--text-dim);}
 
-  /* main grid: left log column, right stack (gauges + chart) */
+  .btn-export, .btn-logout{
+    background:var(--panel);border:1px solid var(--line);color:var(--text);
+    padding:8px 12px;border-radius:3px;font-size:11px;font-family:var(--mono);
+    cursor:pointer;transition:all .2s;
+  }
+  .btn-export:hover{border-color:var(--amber);color:var(--amber);}
+  .btn-logout{border-color:var(--red);color:var(--red);}
+  .btn-logout:hover{background:var(--red);color:var(--ink);}
+
+  /* main grid */
   main{
     display:grid;grid-template-columns:340px 1fr;gap:16px;
     align-items:start;
@@ -91,10 +129,10 @@
   }
   .panel-title span.n{color:var(--amber-dim);font-family:var(--mono);}
 
-  /* ---- Log panel (5) ---- */
+  /* Log panel - Top to Bottom Descending Flow */
   #log-panel{height:100%;min-height:520px;display:flex;flex-direction:column;}
   #log-list{
-    flex:1;overflow-y:auto;display:flex;flex-direction:column-reverse;gap:8px;
+    flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;
     max-height:640px;
   }
   .log-entry{
@@ -109,24 +147,22 @@
   .log-entry .m{color:var(--text);}
   .log-empty{color:var(--text-dim);font-size:12px;text-align:center;padding:40px 0;}
 
-  /* ---- right column stack ---- */
+  /* Right column stack */
   .right-stack{display:grid;gap:16px;}
   .gauge-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 
-  /* Ratio gauge (4) */
+  /* Gauges & Chart */
   #ratio-value{font-family:var(--disp);font-size:34px;font-weight:700;color:var(--amber);}
   #ratio-bar-track{height:8px;background:var(--panel-2);border-radius:4px;margin-top:12px;overflow:hidden;border:1px solid var(--line);}
   #ratio-bar-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--green),var(--amber),var(--red));transition:width .2s ease;}
   .gauge-meta{display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim);margin-top:6px;}
 
-  /* Intensity gauge (2) */
   #intensity-value{font-family:var(--disp);font-size:20px;font-weight:600;}
   .mmi-scale{display:flex;gap:3px;margin-top:12px;}
   .mmi-seg{flex:1;height:8px;border-radius:2px;background:var(--panel-2);border:1px solid var(--line);}
   .mmi-seg.on{background:var(--amber);border-color:var(--amber);}
   .mmi-seg.on.hi{background:var(--red);border-color:var(--red);}
 
-  /* Chart (1) */
   #chart-panel{min-height:340px;}
   #chart-wrap{position:relative;height:280px;}
   .chart-stats{display:flex;gap:24px;margin-top:10px;font-size:11px;color:var(--text-dim);}
@@ -137,7 +173,31 @@
 </head>
 <body>
 
-<div id="loading">
+<!-- Login Modal Overlay -->
+<div id="auth-overlay">
+  <div class="auth-card">
+    <h2>CONSOLE ACCESS</h2>
+    <p>Authenticate to establish encrypted telemetry stream</p>
+    <form id="auth-form">
+      <div class="auth-field">
+        <label>Broker Host</label>
+        <input type="text" id="broker-host" placeholder="e.g. cluster.hivemq.cloud" required>
+      </div>
+      <div class="auth-field">
+        <label>MQTT Username</label>
+        <input type="text" id="broker-user" required>
+      </div>
+      <div class="auth-field">
+        <label>MQTT Password</label>
+        <input type="password" id="broker-pass" required>
+      </div>
+      <button type="submit" class="auth-btn">Initialize Connection</button>
+      <div id="auth-error" class="auth-error">Authentication failed. Check parameter inputs.</div>
+    </form>
+  </div>
+</div>
+
+<div id="loading" class="hidden">
   <div class="pulse-dot"></div>
   <div class="label">Establishing link</div>
   <div class="sub" id="loading-sub">connecting to broker…</div>
@@ -151,12 +211,14 @@
       </svg>
       <div>
         <h1>ALTOGRAM</h1>
-        <div class="tag">Peak Ground Acceleration Console — Node 01</div>
+        <div class="tag">Peak Ground Motion Console — Node 01</div>
       </div>
     </div>
     <div class="badge-row">
+      <button class="btn-export" onclick="exportTelemetryCSV()">Export CSV</button>
       <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
       <div class="badge relay-off" id="badge-relay"><span class="dot"></span><span id="relay-text">Relay Idle</span></div>
+      <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
   </header>
 
@@ -192,17 +254,13 @@
     </div>
   </main>
 
-  <footer>seismic/telemetry · seismic/alert · seismic/system — HiveMQ Cloud</footer>
+  <footer>seismic/telemetry · seismic/alert · seismic/system</footer>
 </div>
 
 <script>
-/* ---------------- Broker config (from device firmware) ---------------- */
-const urlParams = new URLSearchParams(window.location.search);
-
-const MQTT_HOST = urlParams.get('host') || "";
-const MQTT_WS_URL = MQTT_HOST ? `wss://${MQTT_HOST}:8884/mqtt` : "";
-const MQTT_USER = urlParams.get('user') || "";
-const MQTT_PASS = urlParams.get('pass') || "";
+/* Memory Storage Buffers */
+const telemetryRecords = [];
+const eventLogRecords = [];
 
 const TOPICS = {
   telemetry: "seismic/telemetry",
@@ -210,7 +268,7 @@ const TOPICS = {
   system: "seismic/system"
 };
 
-/* ---------------- MMI scale ---------------- */
+/* MMI Scale Logic */
 const MMI_LEVELS = [
   {label:"I — Imperceptible", color:"var(--green)"},
   {label:"II-III — Weak", color:"var(--green)"},
@@ -241,7 +299,7 @@ function renderMmiScale(activeIdx){
 }
 renderMmiScale(0);
 
-/* ---------------- Chart ---------------- */
+/* Chart Setup */
 const MAX_POINTS = 60;
 const chartData = { labels:[], values:[] };
 const ctx = document.getElementById('pgaChart').getContext('2d');
@@ -288,7 +346,6 @@ function pushPga(value){
   }
 }
 
-/* ---------------- Ratio gauge ---------------- */
 function setRatio(ratio){
   const clamped = Math.max(0, Math.min(ratio, 5));
   document.getElementById('ratio-value').textContent = ratio.toFixed(2);
@@ -297,7 +354,6 @@ function setRatio(ratio){
   valEl.style.color = ratio >= 2.5 ? 'var(--red)' : (ratio >= 1.5 ? 'var(--amber)' : 'var(--green)');
 }
 
-/* ---------------- Intensity display ---------------- */
 function setIntensity(str){
   const idx = mmiIndexFromStr(str);
   const lvl = MMI_LEVELS[idx];
@@ -307,24 +363,74 @@ function setIntensity(str){
   renderMmiScale(idx);
 }
 
-/* ---------------- Log ---------------- */
+/* Persistent Logging System - Descending Display (Latest Log First) */
 let logCount = 0;
+
+function saveLogToStorage(logObj) {
+  const storedLogs = JSON.parse(sessionStorage.getItem('dashboard_logs') || '[]');
+  storedLogs.unshift(logObj); // Add newest to start
+  if (storedLogs.length > 100) storedLogs.pop();
+  sessionStorage.setItem('dashboard_logs', JSON.stringify(storedLogs));
+}
+
 function addLog(kind, message){
   const list = document.getElementById('log-list');
   const empty = list.querySelector('.log-empty');
   if(empty) empty.remove();
+
+  const timeStr = new Date().toLocaleTimeString();
+  const isoStr = new Date().toLocaleString();
+
   const entry = document.createElement('div');
   entry.className = 'log-entry ' + kind;
-  entry.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span><span class="m">${message}</span>`;
+  entry.innerHTML = `<span class="t">${timeStr}</span><span class="m">${message}</span>`;
+  
+  // Prepend to top of UI list for descending order
   list.prepend(entry);
+
   logCount++;
   document.getElementById('log-count').textContent = logCount;
   while(list.children.length > 100) list.removeChild(list.lastChild);
-  
-  return entry; // Returned element reference for live updates
+
+  // Store log event in global memory array for CSV Export
+  eventLogRecords.unshift({
+    timestamp: isoStr,
+    type: kind.toUpperCase(),
+    message: message
+  });
+
+  // Save entry into sessionStorage
+  saveLogToStorage({ time: timeStr, kind: kind, message: message, isoTimestamp: isoStr });
+
+  return entry;
 }
 
-/* ---------------- Status / Relay badges ---------------- */
+function restoreSavedLogs() {
+  const savedLogs = JSON.parse(sessionStorage.getItem('dashboard_logs') || '[]');
+  if (savedLogs.length === 0) return;
+
+  const list = document.getElementById('log-list');
+  const empty = list.querySelector('.log-empty');
+  if(empty) empty.remove();
+
+  // Re-render in descending order (latest at top)
+  savedLogs.forEach(log => {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry ' + log.kind;
+    entry.innerHTML = `<span class="t">${log.time}</span><span class="m">${log.message}</span>`;
+    list.appendChild(entry);
+
+    eventLogRecords.push({
+      timestamp: log.isoTimestamp || new Date().toLocaleString(),
+      type: log.kind.toUpperCase(),
+      message: log.message
+    });
+  });
+
+  logCount = savedLogs.length;
+  document.getElementById('log-count').textContent = logCount;
+}
+
 function setSystemStatus(online){
   const badge = document.getElementById('badge-status');
   badge.className = 'badge ' + (online ? 'online' : 'offline');
@@ -336,117 +442,244 @@ function setRelay(active){
   document.getElementById('relay-text').textContent = active ? 'Relay Engaged' : 'Relay Idle';
 }
 
-/* ---------------- Loading screen ---------------- */
-let firstMessageReceived = false;
-function dismissLoading(){
-  if(firstMessageReceived) return;
-  firstMessageReceived = true;
-  document.getElementById('loading').classList.add('hidden');
+/* Option A Export Implementation: Separate Files for Events and Telemetry */
+function exportTelemetryCSV() {
+  if (telemetryRecords.length === 0 && eventLogRecords.length === 0) {
+    alert("No telemetry or event records available to export.");
+    return;
+  }
+
+  const timestamp = Date.now();
+
+  // 1. Export System & Alert Event Logs
+  if (eventLogRecords.length > 0) {
+    let eventCsv = "Timestamp,Event Type,Description\n";
+    eventLogRecords.forEach(e => {
+      const cleanMessage = e.message.replace(/"/g, '""');
+      eventCsv += `"${e.timestamp}","${e.type}","${cleanMessage}"\n`;
+    });
+    downloadCSV(eventCsv, `altogram_event_logs_${timestamp}.csv`);
+  }
+
+  // 2. Export Continuous Telemetry Records
+  if (telemetryRecords.length > 0) {
+    let telemetryCsv = "Timestamp,PGA_g,Ratio,Intensity\n";
+    telemetryRecords.forEach(r => {
+      telemetryCsv += `"${r.timestamp}",${r.pga},${r.ratio},"${r.intensity}"\n`;
+    });
+    downloadCSV(telemetryCsv, `altogram_telemetry_${timestamp}.csv`);
+  }
 }
 
-/* Global Alert Tracking State */
+function downloadCSV(csvContent, filename) {
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+/* Auth Modal Handling & System Events */
+let client;
 let activeAlertIntensity = "";
 let activeLogElement = null;
-let lastRemoteStatus = "";
 
-/* ---------------- MQTT connection ---------------- */
-const subEl = document.getElementById('loading-sub');
-if (!MQTT_HOST || !MQTT_USER || !MQTT_PASS) {
-  subEl.textContent = "Error: Missing MQTT credentials in URL";
-  throw new Error("Missing MQT credentials in URL parameters.");
+function hideAuthError() {
+  document.getElementById('auth-error').style.display = 'none';
 }
 
-let client;
+// Reload logs & auto-login if saved session exists
+window.addEventListener('DOMContentLoaded', () => {
+  restoreSavedLogs();
 
-try{
-  client = mqtt.connect(MQTT_WS_URL, {
-    username: MQTT_USER,
-    password: MQTT_PASS,
-    clientId: "dashboard_" + Math.random().toString(16).slice(2,10),
-    reconnectPeriod: 4000,
-    connectTimeout: 8000
-  });
+  const storedHost = sessionStorage.getItem('mqtt_host');
+  const storedUser = sessionStorage.getItem('mqtt_user');
+  const storedPass = sessionStorage.getItem('mqtt_pass');
 
-  client.on('connect', () => {
-    subEl.textContent = "connected — subscribing…";
-    setSystemStatus(true);
-    addLog('system', 'Dashboard connected to broker');
-    client.subscribe([TOPICS.telemetry, TOPICS.alert, TOPICS.system]);
-  });
+  if (storedHost && storedUser && storedPass) {
+    document.getElementById('broker-host').value = storedHost;
+    document.getElementById('broker-user').value = storedUser;
+    document.getElementById('broker-pass').value = storedPass;
 
-  client.on('reconnect', () => setSystemStatus(false));
-  client.on('close', () => setSystemStatus(false));
-  client.on('offline', () => setSystemStatus(false));
-  client.on('error', (err) => {
-    subEl.textContent = "connection error — retrying…";
-    setSystemStatus(false);
-  });
+    document.getElementById('auth-overlay').classList.add('hidden');
+    document.getElementById('loading').classList.remove('hidden');
+    initMQTT(storedHost, storedUser, storedPass);
+  }
+});
 
-  client.on('message', (topic, payload) => {
-    dismissLoading();
-    let data;
-    try{ data = JSON.parse(payload.toString()); } catch(e){ return; }
+document.getElementById('auth-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  hideAuthError();
 
-    if(topic === TOPICS.telemetry){
-      if(typeof data.pga_g === 'number') pushPga(data.pga_g);
-      if(typeof data.ratio === 'number') setRatio(data.ratio);
-      if(data.intensity) setIntensity(data.intensity);
-    }
+  const host = document.getElementById('broker-host').value.trim();
+  const user = document.getElementById('broker-user').value.trim();
+  const pass = document.getElementById('broker-pass').value.trim();
 
-    if(topic === TOPICS.alert){
-      if(data.event === 'ALERT_TRIGGERED') {
-        setRelay(true);
-        if(data.intensity) setIntensity(data.intensity);
+  document.getElementById('auth-overlay').classList.add('hidden');
+  const loadingEl = document.getElementById('loading');
+  loadingEl.classList.remove('hidden');
+  
+  initMQTT(host, user, pass);
+});
 
-        const pgaVal = Number(data.pga || 0).toFixed(4);
+function initMQTT(host, user, pass) {
+  const wsUrl = `wss://${host}:8884/mqtt`;
 
-        if (!activeAlertIntensity) {
-          // First trigger: Create the primary alert log entry
-          activeAlertIntensity = data.intensity || "Detected";
-          activeLogElement = addLog('alert', `🚨 SEISMIC EVENT DETECTED – Peak Acceleration: ${pgaVal} g · Level: ${activeAlertIntensity}`);
-        } else if (activeAlertIntensity !== data.intensity) {
-          // Escalation: Dynamically update existing entry in-place
-          activeAlertIntensity = data.intensity;
-          if (activeLogElement) {
-            const msgEl = activeLogElement.querySelector('.m');
-            const timeEl = activeLogElement.querySelector('.t');
-            if (msgEl) {
-              msgEl.textContent = `⚠️ INTENSITY ESCALATED – Peak Acceleration: ${pgaVal} g · Level: ${data.intensity}`;
-            }
-            if (timeEl) {
-              timeEl.textContent = new Date().toLocaleTimeString();
-            }
+  try {
+    client = mqtt.connect(wsUrl, {
+      username: user,
+      password: pass,
+      clientId: "dashboard_" + Math.random().toString(16).slice(2, 10),
+      reconnectPeriod: 4000,
+      connectTimeout: 8000
+    });
+
+    client.on('connect', () => {
+      sessionStorage.setItem('mqtt_host', host);
+      sessionStorage.setItem('mqtt_user', user);
+      sessionStorage.setItem('mqtt_pass', pass);
+
+      document.getElementById('loading').classList.add('hidden');
+      setSystemStatus(true);
+      
+      // Connection Log
+      addLog('system', 'HTML Client connected to broker');
+      client.subscribe([TOPICS.telemetry, TOPICS.alert, TOPICS.system]);
+    });
+
+    client.on('reconnect', () => {
+      setSystemStatus(false);
+      // Reconnection Log
+      addLog('system', 'HTML Client reconnecting to broker...');
+    });
+
+    client.on('close', () => {
+      setSystemStatus(false);
+      // Disconnection Log
+      addLog('system', 'HTML Client disconnected from broker');
+    });
+
+    client.on('offline', () => {
+      setSystemStatus(false);
+      // Offline Event Log
+      addLog('system', 'HTML Client network state is offline');
+    });
+
+    client.on('error', (err) => {
+      setSystemStatus(false);
+      
+      if (client) client.end(true);
+
+      sessionStorage.removeItem('mqtt_host');
+      sessionStorage.removeItem('mqtt_user');
+      sessionStorage.removeItem('mqtt_pass');
+
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('auth-overlay').classList.remove('hidden');
+      const errEl = document.getElementById('auth-error');
+      errEl.textContent = "Authentication failed. Check parameter inputs.";
+      errEl.style.display = 'block';
+
+      // Error Log
+      addLog('system', 'HTML Client connection error - Invalid Credentials');
+    });
+
+    client.on('message', (topic, payload) => {
+      let data;
+      try { data = JSON.parse(payload.toString()); } catch(e) { return; }
+
+      // Listen for MCU System Connectivity Status
+      if (topic === TOPICS.system) {
+        if (data.status) {
+          const statusLower = data.status.toLowerCase();
+          if (statusLower === 'connected') {
+            addLog('system', 'MCU connected to broker');
+          } else if (statusLower === 'disconnected') {
+            addLog('system', 'MCU disconnected from broker');
           }
         }
-      } else if(data.event === 'STATUS_NORMAL'){
-        setRelay(false);
-        activeAlertIntensity = "";
-        activeLogElement = null; // Clear reference for the next event
-        addLog('normal', 'Status normal — shaking subsided');
       }
-    }
 
-    if(topic === TOPICS.system){
-      const currentStatus = data.status || 'unknown';
+      if (topic === TOPICS.telemetry) {
+        if (typeof data.pga_g === 'number') pushPga(data.pga_g);
+        if (typeof data.ratio === 'number') setRatio(data.ratio);
+        if (data.intensity) setIntensity(data.intensity);
 
-      if (currentStatus !== lastRemoteStatus) {
-        lastRemoteStatus = currentStatus;
-        addLog('system', `Remote Node Status: ${currentStatus}`);
+        telemetryRecords.push({
+          timestamp: new Date().toLocaleString(),
+          pga: data.pga_g || 0,
+          ratio: data.ratio || 0,
+          intensity: data.intensity || ""
+        });
       }
-    }
-  });
 
-} catch(e){
-  subEl.textContent = "unable to initialize client";
+      if (topic === TOPICS.alert) {
+        if (data.event === 'ALERT_TRIGGERED') {
+          setRelay(true);
+          if (data.intensity) setIntensity(data.intensity);
+          const pgaVal = Number(data.pga || 0).toFixed(4);
+
+          if (!activeAlertIntensity) {
+            // Initial Trigger Event
+            activeAlertIntensity = data.intensity || "Detected";
+            activeLogElement = addLog('alert', `🚨 SEISMIC EVENT DETECTED – Peak Acceleration: ${pgaVal} g · Level: ${activeAlertIntensity}`);
+          } else if (activeAlertIntensity !== data.intensity) {
+            // Escalation Event: Logged as a new entry so it records into eventLogRecords and exports properly
+            activeAlertIntensity = data.intensity;
+            activeLogElement = addLog('alert', `⚠️ INTENSITY ESCALATED – Peak Acceleration: ${pgaVal} g · Level: ${data.intensity}`);
+          }
+        } else if (data.event === 'STATUS_NORMAL') {
+          setRelay(false);
+          activeAlertIntensity = "";
+          activeLogElement = null;
+          addLog('normal', 'Status normal — shaking subsided');
+        }
+      }
+    });
+
+  } catch(e) {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('auth-overlay').classList.remove('hidden');
+    document.getElementById('auth-error').style.display = 'block';
+    addLog('system', 'HTML Client failed to initialize connection');
+  }
 }
 
-/* Fallback: if nothing arrives shortly, keep the loading screen informative
-   but don't block the UI forever */
-setTimeout(() => {
-  if(!firstMessageReceived){
-    subEl.textContent = "waiting on first telemetry frame…";
+/* Logout Implementation with Prompt Confirmation */
+function logout() {
+  const confirmed = confirm("Are you sure you want to terminate the session and logout? Active telemetry logging will stop and unsaved session logs will be cleared.");
+  if (!confirmed) {
+    return;
   }
-}, 6000);
+
+  if (client) {
+    client.end(true);
+  }
+  
+  // Wipe session parameters and stored log records
+  sessionStorage.removeItem('mqtt_host');
+  sessionStorage.removeItem('mqtt_user');
+  sessionStorage.removeItem('mqtt_pass');
+  sessionStorage.removeItem('dashboard_logs');
+
+  // Clear in-memory buffers
+  telemetryRecords.length = 0;
+  eventLogRecords.length = 0;
+
+  // Reset visual state and log counts
+  setSystemStatus(false);
+  setRelay(false);
+  document.getElementById('log-list').innerHTML = '<div class="log-empty">No events recorded yet — awaiting telemetry</div>';
+  document.getElementById('log-count').textContent = '0';
+  logCount = 0;
+
+  // Reveal login overlay
+  document.getElementById('auth-overlay').classList.remove('hidden');
+  hideAuthError();
+}
 </script>
 </body>
 </html>
