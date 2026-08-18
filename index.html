@@ -219,6 +219,7 @@
       <button class="btn-logout" onclick="logout()">Logout</button>
       <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
       <div class="badge relay-off" id="badge-relay"><span class="dot"></span><span id="relay-text">Relay Idle</span></div>
+      <button class="btn-export" id="btn-reset-relay" style="display:none;" onclick="resetRelay()">Reset Relay</button>
     </div>
   </header>
 
@@ -270,7 +271,8 @@ const MAX_EVENT_RECORDS = 2000;
 const TOPICS = {
   telemetry: "seismic/telemetry",
   alert: "seismic/alert",
-  system: "seismic/system"
+  system: "seismic/system",
+  command: "seismic/command"
 };
 
 /* MMI Scale Logic */
@@ -444,7 +446,7 @@ function restoreSavedLogs() {
     list.appendChild(entry);
 
     eventLogRecords.push({
-      timestamp: log.isoTimestamp || new Date().toLocaleString(),
+      timestamp: log.isoTimestamp || new Date().toISOString(),
       type: log.kind.toUpperCase(),
       message: log.message
     });
@@ -462,7 +464,18 @@ function setSystemStatus(online){
 function setRelay(active){
   const badge = document.getElementById('badge-relay');
   badge.className = 'badge ' + (active ? 'relay-on' : 'relay-off');
-  document.getElementById('relay-text').textContent = active ? 'Relay Engaged' : 'Relay Idle';
+  document.getElementById('relay-text').textContent = active ? 'Relay Engaged (Latched)' : 'Relay Idle';
+  // The relay now latches on the device side and only clears via an
+  // explicit reset command - mirroring that here so the button only
+  // appears while there's actually something to reset.
+  document.getElementById('btn-reset-relay').style.display = active ? 'inline-block' : 'none';
+}
+
+function resetRelay(){
+  if (!client || !client.connected) { addLog('system', 'Cannot send reset - not connected to broker'); return; }
+  if (!confirm('This clears the latched relay trip and re-energizes the connected circuit. Confirm the area is safe before resetting. Continue?')) return;
+  client.publish(TOPICS.command, JSON.stringify({ cmd: 'reset' }));
+  addLog('system', 'Reset command sent to device');
 }
 
 // Prevents CSV/formula injection: if a field (sourced from MQTT payloads)
