@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOCTYPE html> 
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -216,10 +216,10 @@
     </div>
     <div class="badge-row">
       <button class="btn-export" onclick="exportTelemetryCSV()">Export CSV</button>
-      <button class="btn-logout" onclick="logout()">Logout</button>
-      <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
       <div class="badge relay-off" id="badge-relay"><span class="dot"></span><span id="relay-text">Relay Idle</span></div>
       <button class="btn-export" id="btn-reset-relay" style="display:none;" onclick="resetRelay()">Reset Relay</button>
+      <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
+      <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
   </header>
 
@@ -232,10 +232,10 @@
     <div class="right-stack">
       <div class="gauge-row">
         <div class="panel">
-          <p class="panel-title">Trigger Ratio</p>
-          <div id="ratio-value">0.00</div>
+          <p class="panel-title">Trigger Progress</p>
+          <div id="ratio-value">0%</div>
           <div id="ratio-bar-track"><div id="ratio-bar-fill"></div></div>
-          <div class="gauge-meta"><span>0</span><span>Threshold 2.5</span><span>5.0+</span></div>
+          <div class="gauge-meta"><span>0%</span><span>Trips at 100%</span><span>100%</span></div>
         </div>
         <div class="panel">
           <p class="panel-title">Intensity (MMI)</p>
@@ -353,12 +353,12 @@ function pushPga(value){
   }
 }
 
-function setRatio(ratio){
-  const clamped = Math.max(0, Math.min(ratio, 5));
-  document.getElementById('ratio-value').textContent = ratio.toFixed(2);
-  document.getElementById('ratio-bar-fill').style.width = (clamped/5*100) + "%";
+function setTriggerProgress(pct){
+  const clamped = Math.max(0, Math.min(pct, 100));
+  document.getElementById('ratio-value').textContent = clamped.toFixed(0) + "%";
+  document.getElementById('ratio-bar-fill').style.width = clamped + "%";
   const valEl = document.getElementById('ratio-value');
-  valEl.style.color = ratio >= 2.5 ? 'var(--red)' : (ratio >= 1.5 ? 'var(--amber)' : 'var(--green)');
+  valEl.style.color = clamped >= 100 ? 'var(--red)' : (clamped >= 60 ? 'var(--amber)' : 'var(--green)');
 }
 
 function setIntensity(str){
@@ -386,7 +386,7 @@ function addLog(kind, message){
   if(empty) empty.remove();
 
   const timeStr = new Date().toLocaleTimeString();
-  const isoStr = new Date().toISOString();
+  const isoStr = new Date().toLocaleString();
 
   // Built with textContent (not innerHTML) so a message string containing
   // HTML/script - e.g. from a spoofed or misconfigured MQTT publisher -
@@ -446,7 +446,7 @@ function restoreSavedLogs() {
     list.appendChild(entry);
 
     eventLogRecords.push({
-      timestamp: log.isoTimestamp || new Date().toISOString(),
+      timestamp: log.isoTimestamp || new Date().toLocaleString(),
       type: log.kind.toUpperCase(),
       message: log.message
     });
@@ -662,7 +662,7 @@ function initMQTT(host, user, pass) {
 
       if (topic === TOPICS.telemetry) {
         if (typeof data.pga_g === 'number') pushPga(data.pga_g);
-        if (typeof data.ratio === 'number') setRatio(data.ratio);
+        if (typeof data.trigger_pct === 'number') setTriggerProgress(data.trigger_pct);
         if (data.intensity) setIntensity(data.intensity);
 
         // Prefer the MCU's own NTP timestamp (ts, epoch seconds) when it's
