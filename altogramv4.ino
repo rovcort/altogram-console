@@ -58,11 +58,28 @@ const float THRESHOLD_RATIO = 2.5;
 const float ALPHA_STA = 0.20;
 const float ALPHA_LTA = 0.005;
 
-const int MIN_TRIGGER_SAMPLES = 10;
+// MIN_TRIGGER_SAMPLES was 10 (100ms sustained above threshold) - short
+// enough that a single bump or knock could trip a relay wired to a gas or
+// electrical shutoff. 100 samples = 1 second sustained, which is long
+// enough to screen out short mechanical transients while still being fast
+// relative to real P-wave onset durations.
+const int MIN_TRIGGER_SAMPLES = 100;
 int triggerCounter = 0;
 
+// Once tripped, the relay LATCHES (stays engaged) regardless of triggerCounter
+// dropping back down - this is deliberate: an earthquake's shaking oscillates,
+// so if release were tied directly to triggerCounter the relay could chatter
+// on/off rapidly mid-event. For a gas or electrical shutoff that's the
+// failure mode to avoid most - re-energizing a gas line mid-quake before
+// anyone has checked for a leak is exactly what a real seismic shutoff valve
+// is designed never to do. Release only happens via an explicit reset
+// command (see mqttCallback / seismic/command below), matching how real
+// mechanical seismic gas shutoff valves require manual reset.
+bool relayLatched = false;
+const char* COMMAND_TOPIC = "seismic/command";
+
 // Buzzer Alarm
-const int buzzer = 4;
+const int buzzer = 9;
 unsigned long previousAlarmMillis = 0;
 bool alarmState = LOW;
 
@@ -231,6 +248,42 @@ void loadOrConfigureCredentials() {
 }
 
 // Reconnect to MQTT with LWT (Last Will and Testament)
+// Clears a tripped relay latch. Only called from mqttCallback() below in
+// response to an explicit {"cmd":"reset"} on seismic/command - never
+// automatically, by design (see relayLatched comment above).
+void resetRelayLatch() {
+  relayLatched = false;
+  lastAlertState = false;
+  triggerCounter = 0;
+  activeAlertPeakPGA = 0.0;
+  lastPrintedIntensity = "";
+  digitalWrite(relayPin, LOW);
+
+  if (mqttClient.connected()) {
+    mqttClient.publish("seismic/alert", "{\"event\":\"STATUS_NORMAL\"}", true);
+  }
+
+  Serial.println("========================================");
+  Serial.println("[RELAY RESET] Latch cleared via manual command.");
+  Serial.println("========================================");
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, COMMAND_TOPIC) != 0) return;
+
+  char buf[64];
+  unsigned int copyLen = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
+  memcpy(buf, payload, copyLen);
+  buf[copyLen] = '\0';
+
+  // Deliberately simple string match rather than a JSON parser - this is a
+  // single-field control message, and avoiding a JSON dependency here keeps
+  // the safety-critical reset path minimal.
+  if (strstr(buf, "\"reset\"") != nullptr) {
+    resetRelayLatch();
+  }
+}
+
 void reconnectMQTT() {
   if (!mqttClient.connected()) {
     Serial.print("Attempting MQTT connection to ");
@@ -251,6 +304,7 @@ void reconnectMQTT() {
                "{\"status\":\"%s\",\"imu_fault\":%s}",
                status, imuFault ? "true" : "false");
       mqttClient.publish("seismic/system", statusPayload, true);
+      mqttClient.subscribe(COMMAND_TOPIC);
     } else {
       Serial.print("Failed, rc=");
       Serial.print(mqttClient.state());
@@ -317,6 +371,7 @@ void setup() {
   }
 
   mqttClient.setServer(creds.mqttServer, creds.mqttPort);
+  mqttClient.setCallback(mqttCallback);
 
   Serial.println("System Initialized. Monitoring for seismic activity...");
 
@@ -373,11 +428,20 @@ void loop() {
         triggerCounter = max(0, triggerCounter - 1);
       }
 
-      bool systemAlert = isWarmedUp && (triggerCounter >= MIN_TRIGGER_SAMPLES);
+      bool crossedTriggerThreshold = isWarmedUp && (triggerCounter >= MIN_TRIGGER_SAMPLES);
 
-      if (systemAlert) {
+      // Trip the latch once; triggerCounter dropping back down afterward
+      // (shaking is oscillatory, not a steady signal) no longer releases it.
+      if (crossedTriggerThreshold && !relayLatched) {
+        relayLatched = true;
+      }
+
+      if (relayLatched) {
         digitalWrite(relayPin, HIGH);
 
+        // Peak/intensity tracking continues for as long as the relay stays
+        // latched, independent of triggerCounter, so escalation is still
+        // reported correctly even between oscillation troughs.
         if (filteredSignal > activeAlertPeakPGA || !lastAlertState) {
           activeAlertPeakPGA = filteredSignal;
           currentIntensityStr = estimateMMI(activeAlertPeakPGA);
@@ -393,16 +457,16 @@ void loop() {
           // immediately sees the current alert state instead of nothing until
           // the next escalation or all-clear message happens to fire.
           if (mqttClient.connected()) {
-            char alertPayload[128];
+            char alertPayload[160];
             snprintf(alertPayload, sizeof(alertPayload),
-            "{\"event\":\"ALERT_TRIGGERED\",\"pga\":%.4f,\"intensity\":\"%s\"}",
+            "{\"event\":\"ALERT_TRIGGERED\",\"pga\":%.4f,\"intensity\":\"%s\",\"latched\":true}",
             activeAlertPeakPGA, currentIntensityStr);
             mqttClient.publish("seismic/alert", alertPayload, true);
           }
 
           // Serial Print Initial Trigger
           Serial.println("================================================");
-          Serial.println("[EVENT TRIGGERED] Seismic Activity Detected!");
+          Serial.println("[EVENT TRIGGERED] Seismic Activity Detected! Relay LATCHED - requires manual reset.");
           Serial.print("Intensity: "); Serial.println(currentIntensityStr);
           Serial.println("================================================");
 
@@ -411,9 +475,9 @@ void loop() {
 
           // MQTT Publish Escalation
           if (mqttClient.connected()) {
-            char alertPayload[128];
+            char alertPayload[160];
             snprintf(alertPayload, sizeof(alertPayload),
-            "{\"event\":\"ALERT_TRIGGERED\",\"pga\":%.4f,\"intensity\":\"%s\"}",
+            "{\"event\":\"ALERT_TRIGGERED\",\"pga\":%.4f,\"intensity\":\"%s\",\"latched\":true}",
             activeAlertPeakPGA, currentIntensityStr);
             mqttClient.publish("seismic/alert", alertPayload, true);
           }
@@ -425,20 +489,6 @@ void loop() {
 
       } else {
         digitalWrite(relayPin, LOW);
-
-        if (lastAlertState) {
-          lastAlertState = false;
-          activeAlertPeakPGA = 0.0;
-          lastPrintedIntensity = "";
-
-          if (mqttClient.connected()) {
-            mqttClient.publish("seismic/alert", "{\"event\":\"STATUS_NORMAL\"}", true);
-          }
-
-          Serial.println("========================================");
-          Serial.println("[STATUS NORMAL] Shaking has subsided.");
-          Serial.println("========================================");
-        }
       }
 
       // Dynamic PGA Window Tracking (1-Second Peak Tracking)
@@ -487,7 +537,7 @@ void loop() {
       alarmState = !alarmState;
       if (alarmState) tone(buzzer, 600); else noTone(buzzer);
     }
-  } else if (triggerCounter >= MIN_TRIGGER_SAMPLES) {
+  } else if (relayLatched) {
     unsigned long dynamicInterval = getBeepInterval(currentIntensityStr);
 
     if (currentTime - previousAlarmMillis >= dynamicInterval) {
