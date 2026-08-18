@@ -79,7 +79,7 @@ bool relayLatched = false;
 const char* COMMAND_TOPIC = "seismic/command";
 
 // Buzzer Alarm
-const int buzzer = 9;
+const int buzzer = 4;
 unsigned long previousAlarmMillis = 0;
 bool alarmState = LOW;
 
@@ -512,11 +512,18 @@ void loop() {
         // 0 if the NINA module hasn't completed an NTP sync yet.
         unsigned long epochTime = WiFi.getTime();
 
+        // Progress toward tripping, as a percentage of the sustained window
+        // required (MIN_TRIGGER_SAMPLES). triggerCounter isn't capped at
+        // MIN_TRIGGER_SAMPLES (it keeps counting up while shaking continues
+        // even after the latch has already engaged), so clamp for display.
+        int cappedCounter = min(triggerCounter, MIN_TRIGGER_SAMPLES);
+        float triggerPct = (cappedCounter * 100.0) / MIN_TRIGGER_SAMPLES;
+
         if (mqttClient.connected()){
-          char telemetryPayload[160];
+          char telemetryPayload[192];
           snprintf(telemetryPayload, sizeof(telemetryPayload),
-            "{\"pga_g\":%.4f,\"ratio\":%.2f,\"intensity\":\"%s\",\"ts\":%lu}",
-            pgaWindowMax, pgaWindowPeakRatio, windowIntensityStr, epochTime);
+            "{\"pga_g\":%.4f,\"ratio\":%.2f,\"intensity\":\"%s\",\"ts\":%lu,\"trigger_pct\":%.1f}",
+            pgaWindowMax, pgaWindowPeakRatio, windowIntensityStr, epochTime, triggerPct);
           mqttClient.publish("seismic/telemetry", telemetryPayload);
         }
 
