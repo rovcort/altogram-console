@@ -216,9 +216,9 @@
     </div>
     <div class="badge-row">
       <button class="btn-export" onclick="exportTelemetryCSV()">Export CSV</button>
+      <button class="btn-logout" onclick="logout()">Logout</button>
       <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
       <div class="badge relay-off" id="badge-relay"><span class="dot"></span><span id="relay-text">Relay Idle</span></div>
-      <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
   </header>
 
@@ -384,7 +384,7 @@ function addLog(kind, message){
   if(empty) empty.remove();
 
   const timeStr = new Date().toLocaleTimeString();
-  const isoStr = new Date().toLocaleString();
+  const isoStr = new Date().toISOString();
 
   // Built with textContent (not innerHTML) so a message string containing
   // HTML/script - e.g. from a spoofed or misconfigured MQTT publisher -
@@ -603,21 +603,32 @@ function initMQTT(host, user, pass) {
 
     client.on('error', (err) => {
       setSystemStatus(false);
-      
-      if (client) client.end(true);
 
-      sessionStorage.removeItem('mqtt_host');
-      sessionStorage.removeItem('mqtt_user');
-      sessionStorage.removeItem('mqtt_pass');
+      // Previously every error - including a transient DNS blip or a
+      // broker being briefly unreachable - was treated as bad credentials,
+      // wiping the saved session and forcing the user back to the login
+      // screen. Only genuine auth failures should do that; anything else
+      // should just log and let mqtt.js's own reconnectPeriod retry.
+      const message = (err && err.message) ? err.message : '';
+      const isAuthFailure = /not authorized|bad user name or password|identifier rejected/i.test(message);
 
-      document.getElementById('loading').classList.add('hidden');
-      document.getElementById('auth-overlay').classList.remove('hidden');
-      const errEl = document.getElementById('auth-error');
-      errEl.textContent = "Authentication failed. Check parameter inputs.";
-      errEl.style.display = 'block';
+      if (isAuthFailure) {
+        if (client) client.end(true);
 
-      // Error Log
-      addLog('system', 'HTML Client connection error - Invalid Credentials');
+        sessionStorage.removeItem('mqtt_host');
+        sessionStorage.removeItem('mqtt_user');
+        sessionStorage.removeItem('mqtt_pass');
+
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('auth-overlay').classList.remove('hidden');
+        const errEl = document.getElementById('auth-error');
+        errEl.textContent = "Authentication failed. Check parameter inputs.";
+        errEl.style.display = 'block';
+
+        addLog('system', 'HTML Client connection error - Invalid Credentials');
+      } else {
+        addLog('system', 'HTML Client connection error - retrying: ' + (message || 'unknown error'));
+      }
     });
 
     client.on('message', (topic, payload) => {
@@ -641,8 +652,15 @@ function initMQTT(host, user, pass) {
         if (typeof data.ratio === 'number') setRatio(data.ratio);
         if (data.intensity) setIntensity(data.intensity);
 
+        // Prefer the MCU's own NTP timestamp (ts, epoch seconds) when it's
+        // provided and non-zero, since the browser's receive-time clock
+        // drifts from device time and won't line up across multiple nodes.
+        const recordTimestamp = (typeof data.ts === 'number' && data.ts > 0)
+          ? new Date(data.ts * 1000).toLocaleString()
+          : new Date().toLocaleString();
+
         telemetryRecords.push({
-          timestamp: new Date().toLocaleString(),
+          timestamp: recordTimestamp,
           pga: data.pga_g || 0,
           ratio: data.ratio || 0,
           intensity: data.intensity || ""
