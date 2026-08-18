@@ -83,6 +83,14 @@ const int buzzer = 4;
 unsigned long previousAlarmMillis = 0;
 bool alarmState = LOW;
 
+// Buzzer auto-mutes after BUZZER_DURATION_MS - deliberately independent of
+// relayLatched. The relay stays tripped (and requires manual reset) exactly
+// as before; only the audible alarm times out, so a real event this long
+// doesn't produce an indefinite, escalating siren someone has to physically
+// reach the device/dashboard to silence.
+unsigned long alertStartMillis = 0;
+const unsigned long BUZZER_DURATION_MS = 30000;
+
 const int relayPin = 8;
 
 // WiFi reconnect tracking (loop() never re-called WiFi.begin() after boot,
@@ -451,6 +459,7 @@ void loop() {
         if (!lastAlertState) {
           lastAlertState = true;
           lastPrintedIntensity = currentIntensityStr;
+          alertStartMillis = currentTime; // buzzer countdown starts here, not on later escalations
 
           // MQTT Publish Initial Alert
           // retain=true so a dashboard that connects (or reconnects) mid-event
@@ -544,7 +553,7 @@ void loop() {
       alarmState = !alarmState;
       if (alarmState) tone(buzzer, 600); else noTone(buzzer);
     }
-  } else if (relayLatched) {
+  } else if (relayLatched && (currentTime - alertStartMillis < BUZZER_DURATION_MS)) {
     unsigned long dynamicInterval = getBeepInterval(currentIntensityStr);
 
     if (currentTime - previousAlarmMillis >= dynamicInterval) {
