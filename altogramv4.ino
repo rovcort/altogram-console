@@ -2,6 +2,7 @@
 #include <Arduino_LSM6DS3.h>
 #include <PubSubClient.h>
 #include <FlashStorage.h>
+#include <Adafruit_SleepyDog.h>
 #include <math.h>
 
 // ---------------------------------------------------------------
@@ -18,6 +19,11 @@
 //
 // Install "FlashStorage" by Arduino via Library Manager if you don't
 // already have it (works on SAMD boards, which the Nano 33 IoT is).
+//
+// Also install "Adafruit SleepyDog Library" via Library Manager - it wraps
+// the SAMD21's built-in hardware watchdog. If setup()/loop() ever hangs
+// (a blocked TLS handshake, a stuck library call, etc.), the watchdog
+// resets the MCU instead of the whole detector silently going dark.
 // ---------------------------------------------------------------
 
 struct Credentials {
@@ -36,7 +42,14 @@ Credentials creds;
 WiFiSSLClient wiFiClient;
 PubSubClient mqttClient(wiFiClient);
 
+// Built once in setup() from the board's WiFi MAC address so two nodes on
+// the same broker never collide on "SeismicSensorClient" and fight for
+// the connection (each new connect would kick the other off).
+char mqttClientID[24] = "SeismicSensorClient";
+bool mqttClientIdSet = false;
+
 bool lastAlertState = false;
+bool imuFault = false; // set in setup() if the IMU never responds; loop() reads this to skip sensing safely
 
 const unsigned long SAMPLE_INTERVAL_MS = 10; // 100 Hz
 const float THRESHOLD_RATIO = 2.5;
@@ -54,6 +67,7 @@ unsigned long previousAlarmMillis = 0;
 bool alarmState = LOW;
 
 const int relayPin = 8;
+
 // WiFi reconnect tracking (loop() never re-called WiFi.begin() after boot,
 // so a dropped connection stayed dropped forever - see loop() below)
 unsigned long lastWifiAttempt = 0;
@@ -78,6 +92,7 @@ unsigned long lastSampleTime = 0;
 
 // Peak Ground Acceleration (PGA) Tracking Window (100 samples = 1 second)
 float pgaWindowMax = 0.0;
+float pgaWindowPeakRatio = 0.0; // ratio captured at the same instant as pgaWindowMax
 int pgaSampleCount = 0;
 const int PGA_WINDOW_SAMPLES = 100;
 const char* currentIntensityStr = "I (Imperceptible)";
@@ -222,7 +237,7 @@ void reconnectMQTT() {
     Serial.print(creds.mqttServer);
     Serial.print("...");
 
-    const char* clientID = "SeismicSensorClient";
+    const char* clientID = mqttClientID;
     const char* willTopic = "seismic/system";
     int willQoS = 1;
     bool willRetain = true;
@@ -232,7 +247,9 @@ void reconnectMQTT() {
       Serial.println("CONNECTED");
       char statusPayload[128];
       const char* status = "connected";
-      snprintf(statusPayload, sizeof(statusPayload), "{\"status\":\"%s\"}", status);
+      snprintf(statusPayload, sizeof(statusPayload),
+               "{\"status\":\"%s\",\"imu_fault\":%s}",
+               status, imuFault ? "true" : "false");
       mqttClient.publish("seismic/system", statusPayload, true);
     } else {
       Serial.print("Failed, rc=");
@@ -242,13 +259,46 @@ void reconnectMQTT() {
   }
 }
 
+void assignMqttClientIdFromMac() {
+  if (mqttClientIdSet) return;
+  byte mac[6];
+  WiFi.macAddress(mac);
+  snprintf(mqttClientID, sizeof(mqttClientID), "SeismicSensor-%02X%02X%02X",
+           mac[2], mac[1], mac[0]);
+  mqttClientIdSet = true;
+  Serial.print("MQTT Client ID: "); Serial.println(mqttClientID);
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 3000);
 
   loadOrConfigureCredentials();
 
-  if (!IMU.begin()) while (1);
+  // Enabled here (not earlier) because runConfigWizard() above blocks
+  // waiting on user Serial input with no timeout - enabling the watchdog
+  // before that would reset the board mid-configuration.
+  int wdtMs = Watchdog.enable(16000);
+  Serial.print("Watchdog enabled, timeout ~"); Serial.print(wdtMs); Serial.println("ms");
+
+  // Previously: if (!IMU.begin()) while (1); - a wiring/hardware fault here
+  // hung the MCU forever with zero indication of why over Serial or MQTT.
+  // Now: retry a few times, and if it still fails, keep booting in a
+  // degraded mode so the fault can be reported once connectivity is up,
+  // rather than looking indistinguishable from a dead/unplugged device.
+  const int IMU_INIT_RETRIES = 5;
+  bool imuOk = false;
+  for (int attempt = 1; attempt <= IMU_INIT_RETRIES; attempt++) {
+    if (IMU.begin()) { imuOk = true; break; }
+    Serial.print("IMU init failed (attempt ");
+    Serial.print(attempt);
+    Serial.println(") - retrying...");
+    delay(500);
+  }
+  imuFault = !imuOk;
+  if (imuFault) {
+    Serial.println("IMU FAULT: sensor not responding after retries. Booting in degraded mode.");
+  }
 
   WiFi.begin(creds.ssid, creds.wifiPass);
 
@@ -263,6 +313,7 @@ void setup() {
     Serial.println("WiFi Status: CONNECTED");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
+    assignMqttClientIdFromMac();
   }
 
   mqttClient.setServer(creds.mqttServer, creds.mqttPort);
@@ -275,6 +326,8 @@ void setup() {
 }
 
 void loop() {
+  Watchdog.reset();
+
   unsigned long currentTime = millis();
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -287,13 +340,14 @@ void loop() {
       WiFi.begin(creds.ssid, creds.wifiPass);
     }
   } else {
+    assignMqttClientIdFromMac();
     if(!mqttClient.connected()) {
       reconnectMQTT();
     }
     mqttClient.loop();
   }
 
-  if (currentTime - lastSampleTime >= SAMPLE_INTERVAL_MS) {
+  if (!imuFault && currentTime - lastSampleTime >= SAMPLE_INTERVAL_MS) {
     lastSampleTime = currentTime;
 
     float ax, ay, az;
@@ -335,12 +389,15 @@ void loop() {
           lastPrintedIntensity = currentIntensityStr;
 
           // MQTT Publish Initial Alert
+          // retain=true so a dashboard that connects (or reconnects) mid-event
+          // immediately sees the current alert state instead of nothing until
+          // the next escalation or all-clear message happens to fire.
           if (mqttClient.connected()) {
             char alertPayload[128];
             snprintf(alertPayload, sizeof(alertPayload),
             "{\"event\":\"ALERT_TRIGGERED\",\"pga\":%.4f,\"intensity\":\"%s\"}",
             activeAlertPeakPGA, currentIntensityStr);
-            mqttClient.publish("seismic/alert", alertPayload);
+            mqttClient.publish("seismic/alert", alertPayload, true);
           }
 
           // Serial Print Initial Trigger
@@ -358,7 +415,7 @@ void loop() {
             snprintf(alertPayload, sizeof(alertPayload),
             "{\"event\":\"ALERT_TRIGGERED\",\"pga\":%.4f,\"intensity\":\"%s\"}",
             activeAlertPeakPGA, currentIntensityStr);
-            mqttClient.publish("seismic/alert", alertPayload);
+            mqttClient.publish("seismic/alert", alertPayload, true);
           }
 
           // Serial Print Instant Escalation
@@ -375,7 +432,7 @@ void loop() {
           lastPrintedIntensity = "";
 
           if (mqttClient.connected()) {
-            mqttClient.publish("seismic/alert", "{\"event\":\"STATUS_NORMAL\"}");
+            mqttClient.publish("seismic/alert", "{\"event\":\"STATUS_NORMAL\"}", true);
           }
 
           Serial.println("========================================");
@@ -385,29 +442,52 @@ void loop() {
       }
 
       // Dynamic PGA Window Tracking (1-Second Peak Tracking)
+      // ratio is captured at the same instant as the new peak so the two
+      // published numbers describe the same moment - previously "ratio"
+      // was just whatever the STA/LTA ratio happened to be when the
+      // 1-second window closed, which could be a different instant than
+      // when pgaWindowMax actually occurred.
       if (filteredSignal > pgaWindowMax) {
         pgaWindowMax = filteredSignal;
+        pgaWindowPeakRatio = ratio;
       }
       pgaSampleCount++;
 
       if (pgaSampleCount >= PGA_WINDOW_SAMPLES) {
         const char* windowIntensityStr = estimateMMI(pgaWindowMax);
 
+        // Device-side NTP timestamp (epoch seconds), when available, so
+        // telemetry can be correlated across multiple sensor nodes without
+        // relying solely on each dashboard browser's local clock. Returns
+        // 0 if the NINA module hasn't completed an NTP sync yet.
+        unsigned long epochTime = WiFi.getTime();
+
         if (mqttClient.connected()){
-          char telemetryPayload[128];
+          char telemetryPayload[160];
           snprintf(telemetryPayload, sizeof(telemetryPayload),
-            "{\"pga_g\":%.4f,\"ratio\":%.2f,\"intensity\":\"%s\"}", pgaWindowMax, ratio, windowIntensityStr);
+            "{\"pga_g\":%.4f,\"ratio\":%.2f,\"intensity\":\"%s\",\"ts\":%lu}",
+            pgaWindowMax, pgaWindowPeakRatio, windowIntensityStr, epochTime);
           mqttClient.publish("seismic/telemetry", telemetryPayload);
         }
 
         pgaWindowMax = 0.0;
+        pgaWindowPeakRatio = 0.0;
         pgaSampleCount = 0;
       }
     }
   }
 
   // Buzzer Control
-  if (triggerCounter >= MIN_TRIGGER_SAMPLES) {
+  if (imuFault) {
+    // Slow, distinct pattern (different pitch/cadence from the quake alarm)
+    // so a sensor fault is observable locally even with no MQTT connection.
+    const unsigned long FAULT_BEEP_INTERVAL_MS = 2000;
+    if (currentTime - previousAlarmMillis >= FAULT_BEEP_INTERVAL_MS) {
+      previousAlarmMillis = currentTime;
+      alarmState = !alarmState;
+      if (alarmState) tone(buzzer, 600); else noTone(buzzer);
+    }
+  } else if (triggerCounter >= MIN_TRIGGER_SAMPLES) {
     unsigned long dynamicInterval = getBeepInterval(currentIntensityStr);
 
     if (currentTime - previousAlarmMillis >= dynamicInterval) {
