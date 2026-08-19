@@ -102,6 +102,12 @@
   .badge.relay-on{border-color:var(--red);color:var(--red);}
   .badge.relay-on .dot{background:var(--red);box-shadow:0 0 8px var(--red);animation:pulse 1s infinite;}
   .badge.relay-off .dot{background:var(--text-dim);}
+  .badge.mode-siren{border-color:var(--amber);color:var(--amber);}
+  .badge.mode-siren .dot{background:var(--amber);}
+  .badge.mode-latch .dot{background:var(--text-dim);}
+
+  .btn-export:disabled{opacity:.4;cursor:not-allowed;}
+  .btn-export:disabled:hover{border-color:var(--line);color:var(--text);}
 
   .btn-export, .btn-logout{
     background:var(--panel);border:1px solid var(--line);color:var(--text);
@@ -216,6 +222,8 @@
     </div>
     <div class="badge-row">
       <button class="btn-export" onclick="exportTelemetryCSV()">Export CSV</button>
+      <div class="badge" id="badge-mode"><span class="dot"></span><span id="mode-text">Mode: —</span></div>
+      <button class="btn-export" id="btn-toggle-mode" onclick="toggleRelayMode()" disabled>Switch Mode</button>
       <div class="badge relay-off" id="badge-relay"><span class="dot"></span><span id="relay-text">Relay Idle</span></div>
       <button class="btn-export" id="btn-reset-relay" style="display:none;" onclick="resetRelay()">Reset Relay</button>
       <div class="badge offline" id="badge-status"><span class="dot"></span><span id="status-text">Offline</span></div>
@@ -255,7 +263,7 @@
     </div>
   </main>
 
-  <footer>seismic/telemetry · seismic/alert · seismic/system</footer>
+  <footer>seismic/telemetry · seismic/alert · seismic/system · seismic/relaymode</footer>
 </div>
 
 <script>
@@ -272,7 +280,8 @@ const TOPICS = {
   telemetry: "seismic/telemetry",
   alert: "seismic/alert",
   system: "seismic/system",
-  command: "seismic/command"
+  command: "seismic/command",
+  relaymode: "seismic/relaymode"
 };
 
 /* MMI Scale Logic */
@@ -461,7 +470,53 @@ function setSystemStatus(online){
   badge.className = 'badge ' + (online ? 'online' : 'offline');
   document.getElementById('status-text').textContent = online ? 'Online' : 'Offline';
 }
+
+// Relay is either a latching gas/electric shutoff or a pulsing external
+// siren - never both at once (see altogramv10.ino). currentRelayMode here
+// just mirrors whatever the device last reported on seismic/relaymode;
+// this UI never assumes a mode, it waits to be told.
+let currentRelayMode = null;
+let relayIsActive = false;
+
+function setRelayModeUI(mode){
+  currentRelayMode = mode;
+  const badge = document.getElementById('badge-mode');
+  const btn = document.getElementById('btn-toggle-mode');
+  const label = mode === 'siren' ? 'Mode: Siren' : (mode === 'latch' ? 'Mode: Latch' : 'Mode: —');
+  badge.className = 'badge ' + (mode === 'siren' ? 'mode-siren' : (mode === 'latch' ? 'mode-latch' : ''));
+  document.getElementById('mode-text').textContent = label;
+  btn.textContent = mode === 'siren' ? 'Switch to Latch' : 'Switch to Siren';
+  updateModeButtonState();
+}
+
+// The device firmware refuses mode-switch commands while relayLatched is
+// true (an event is active/unacknowledged) - disabling the button here
+// too isn't just cosmetic, it keeps the console from sending a command
+// the device would reject anyway, and makes the "why can't I click this"
+// answer visible instead of a silent no-op.
+function updateModeButtonState(){
+  const btn = document.getElementById('btn-toggle-mode');
+  btn.disabled = relayIsActive || currentRelayMode === null;
+  btn.title = relayIsActive ? 'Reset the latched relay before switching modes' : '';
+}
+
+function toggleRelayMode(){
+  if (!client || !client.connected) { addLog('system', 'Cannot send mode change - not connected to broker'); return; }
+  if (relayIsActive) { addLog('system', 'Cannot switch mode while relay is latched - reset first'); return; }
+  if (currentRelayMode === null) return;
+
+  const nextMode = currentRelayMode === 'siren' ? 'latch' : 'siren';
+  const warning = nextMode === 'latch'
+    ? 'Switch relay to LATCH mode? It will hold the connected gas/electric circuit open on the next trigger until manually reset.'
+    : 'Switch relay to SIREN mode? It will supply steady power to an external siren/speaker for 30 seconds and auto-stop - it does NOT pulse the relay, and it will NOT engage the gas/electric shutoff.';
+  if (!confirm(warning)) return;
+
+  client.publish(TOPICS.command, JSON.stringify({ cmd: 'mode', value: nextMode }));
+  addLog('system', `Mode change requested: ${nextMode}`);
+}
+
 function setRelay(active){
+  relayIsActive = active;
   const badge = document.getElementById('badge-relay');
   badge.className = 'badge ' + (active ? 'relay-on' : 'relay-off');
   document.getElementById('relay-text').textContent = active ? 'Relay Engaged (Latched)' : 'Relay Idle';
@@ -469,6 +524,7 @@ function setRelay(active){
   // explicit reset command - mirroring that here so the button only
   // appears while there's actually something to reset.
   document.getElementById('btn-reset-relay').style.display = active ? 'inline-block' : 'none';
+  updateModeButtonState();
 }
 
 function resetRelay(){
@@ -593,7 +649,7 @@ function initMQTT(host, user, pass) {
       
       // Connection Log
       addLog('system', 'HTML Client connected to broker');
-      client.subscribe([TOPICS.telemetry, TOPICS.alert, TOPICS.system]);
+      client.subscribe([TOPICS.telemetry, TOPICS.alert, TOPICS.system, TOPICS.relaymode]);
     });
 
     client.on('reconnect', () => {
@@ -657,6 +713,14 @@ function initMQTT(host, user, pass) {
           } else if (statusLower === 'disconnected') {
             addLog('system', 'MCU disconnected from broker');
           }
+        }
+      }
+
+      // Device reports its active relay mode on connect and whenever it
+      // changes (retained) - the console mirrors it rather than assuming.
+      if (topic === TOPICS.relaymode) {
+        if (data.relay_mode === 'siren' || data.relay_mode === 'latch') {
+          setRelayModeUI(data.relay_mode);
         }
       }
 
@@ -737,6 +801,7 @@ function logout() {
   // Reset visual state and log counts
   setSystemStatus(false);
   setRelay(false);
+  setRelayModeUI(null);
   document.getElementById('log-list').innerHTML = '<div class="log-empty">No events recorded yet — awaiting telemetry</div>';
   document.getElementById('log-count').textContent = '0';
   logCount = 0;
