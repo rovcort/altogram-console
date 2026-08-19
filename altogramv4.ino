@@ -78,6 +78,33 @@ int triggerCounter = 0;
 bool relayLatched = false;
 const char* COMMAND_TOPIC = "seismic/command";
 
+// ---------------------------------------------------------------
+// Relay Mode: LATCH (gas/electric shutoff) vs SIREN (external speaker)
+// ---------------------------------------------------------------
+// Both modes drive relayPin the same way electrically: one clean HIGH,
+// steady, no pulsing. External siren/horn modules already generate their
+// own tone/warble internally - they just need continuous supply, not a
+// pulsed signal - and a mechanical relay cycling on/off every 50-800ms for
+// up to 30 seconds would rack up dozens of switching cycles per event,
+// which is exactly the kind of wear that fails quietly and shows up as a
+// dead relay during a real quake. So the pulsing cadence stays on the
+// onboard piezo buzzer (via tone()) only, never on the relay contacts.
+//
+// LATCH: HIGH on trigger, stays HIGH until manual reset. Matches real
+//        seismic gas/electric shutoff valve behavior - never re-energizes
+//        on its own.
+// SIREN: HIGH on trigger, but auto-drops LOW when BUZZER_DURATION_MS
+//        elapses - no manual reset needed to go quiet, since it's driving
+//        audio equipment, not a valve.
+// Deliberately NOT persisted to flash and always boots as MODE_LATCH: if
+// a device wired to a gas/electric valve ever gets swapped, misconfigured,
+// or loses its saved mode, defaulting to the fail-safe (latching) behavior
+// is the only acceptable default - a device silently booting into SIREN
+// mode on a gas line would mean nothing ever shuts the gas off.
+enum RelayMode { MODE_LATCH, MODE_SIREN };
+RelayMode currentRelayMode = MODE_LATCH;
+const char* relayModeStr() { return currentRelayMode == MODE_SIREN ? "siren" : "latch"; }
+
 // Buzzer Alarm
 const int buzzer = 4;
 unsigned long previousAlarmMillis = 0;
@@ -276,6 +303,16 @@ void resetRelayLatch() {
   Serial.println("========================================");
 }
 
+// Publishes the active relay mode, retained, so a dashboard that connects
+// (or reconnects) mid-session immediately shows the correct mode instead
+// of assuming the default.
+void publishRelayMode() {
+  if (!mqttClient.connected()) return;
+  char payload[48];
+  snprintf(payload, sizeof(payload), "{\"relay_mode\":\"%s\"}", relayModeStr());
+  mqttClient.publish("seismic/relaymode", payload, true);
+}
+
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (strcmp(topic, COMMAND_TOPIC) != 0) return;
 
@@ -289,6 +326,31 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // the safety-critical reset path minimal.
   if (strstr(buf, "\"reset\"") != nullptr) {
     resetRelayLatch();
+    return;
+  }
+
+  // Mode switch: {"cmd":"mode","value":"siren"} or {"cmd":"mode","value":"latch"}
+  // Refused while relayLatched is true - an event is active/unacknowledged,
+  // and changing what the relay physically does mid-event (e.g. a gas
+  // shutoff suddenly starting to pulse instead of holding closed) is
+  // exactly the kind of remote-command race a safety-critical relay should
+  // never allow. Reset the latch first, then switch modes.
+  if (strstr(buf, "\"mode\"") != nullptr) {
+    if (relayLatched) {
+      Serial.println("[MODE CHANGE REJECTED] Relay is latched - reset before switching modes.");
+      return;
+    }
+    if (strstr(buf, "\"siren\"") != nullptr) {
+      currentRelayMode = MODE_SIREN;
+    } else if (strstr(buf, "\"latch\"") != nullptr) {
+      currentRelayMode = MODE_LATCH;
+    } else {
+      return; // unrecognized value, ignore
+    }
+    digitalWrite(relayPin, LOW); // ensure a clean state across the switch
+    Serial.print("[MODE CHANGE] Relay mode set to: ");
+    Serial.println(relayModeStr());
+    publishRelayMode();
   }
 }
 
@@ -313,6 +375,7 @@ void reconnectMQTT() {
                status, imuFault ? "true" : "false");
       mqttClient.publish("seismic/system", statusPayload, true);
       mqttClient.subscribe(COMMAND_TOPIC);
+      publishRelayMode();
     } else {
       Serial.print("Failed, rc=");
       Serial.print(mqttClient.state());
@@ -442,10 +505,20 @@ void loop() {
       // (shaking is oscillatory, not a steady signal) no longer releases it.
       if (crossedTriggerThreshold && !relayLatched) {
         relayLatched = true;
+        alertStartMillis = currentTime; // set here, not below, so relay-drive logic this same iteration can already use it
       }
 
       if (relayLatched) {
-        digitalWrite(relayPin, HIGH);
+        // Both modes drive the pin the same way: one steady HIGH, no
+        // pulsing (see the RelayMode comment block above for why). The
+        // only difference is WHEN it goes back LOW - LATCH mode never
+        // does on its own (needs manual reset); SIREN mode drops LOW once
+        // BUZZER_DURATION_MS elapses, same auto-stop window as the buzzer.
+        if (currentRelayMode == MODE_LATCH) {
+          digitalWrite(relayPin, HIGH);
+        } else { // MODE_SIREN
+          digitalWrite(relayPin, (currentTime - alertStartMillis < BUZZER_DURATION_MS) ? HIGH : LOW);
+        }
 
         // Peak/intensity tracking continues for as long as the relay stays
         // latched, independent of triggerCounter, so escalation is still
@@ -459,7 +532,7 @@ void loop() {
         if (!lastAlertState) {
           lastAlertState = true;
           lastPrintedIntensity = currentIntensityStr;
-          alertStartMillis = currentTime; // buzzer countdown starts here, not on later escalations
+          // alertStartMillis already set above, the instant relayLatched flipped true
 
           // MQTT Publish Initial Alert
           // retain=true so a dashboard that connects (or reconnects) mid-event
