@@ -587,6 +587,45 @@ function downloadCSV(csvContent, filename) {
 /* Auth Modal Handling & System Events */
 let client;
 let activeAlertIntensity = "";
+
+/* Alert Tone - synthesized in-browser, no audio file/network dependency.
+   Browsers block audio until a user gesture happens on the page, so the
+   AudioContext is created lazily and unlocked on whatever gesture comes
+   first - the login form submit, or (for an auto-reconnecting saved
+   session, which has no click of its own) the first click/keydown
+   anywhere on the page. Once unlocked it stays unlocked for the session,
+   so later auto-triggered alert sounds play without needing a button. */
+let audioCtx = null;
+function unlockAudio() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+window.addEventListener('click', unlockAudio, { once: true });
+window.addEventListener('keydown', unlockAudio, { once: true });
+
+// Two short tones (attack + decay) rather than a single beep - reads as
+// an alert cue rather than a UI blip, without needing an audio asset.
+function playAlertTone(escalation) {
+  if (!audioCtx) return; // not unlocked yet (no user gesture has occurred) - fails silently
+  const now = audioCtx.currentTime;
+  const freqs = escalation ? [880, 1108] : [660, 990]; // escalation pitched slightly higher/tighter
+  freqs.forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    const start = now + i * 0.14;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.15, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(start);
+    osc.stop(start + 0.18);
+  });
+}
 let activeLogElement = null;
 
 function hideAuthError() {
@@ -755,10 +794,12 @@ function initMQTT(host, user, pass) {
             // Initial Trigger Event
             activeAlertIntensity = data.intensity || "Detected";
             activeLogElement = addLog('alert', `🚨 SEISMIC EVENT DETECTED – Peak Acceleration: ${pgaVal} g · Level: ${activeAlertIntensity}`);
+            playAlertTone(false);
           } else if (activeAlertIntensity !== data.intensity) {
             // Escalation Event: Logged as a new entry so it records into eventLogRecords and exports properly
             activeAlertIntensity = data.intensity;
             activeLogElement = addLog('alert', `⚠️ INTENSITY ESCALATED – Peak Acceleration: ${pgaVal} g · Level: ${data.intensity}`);
+            playAlertTone(true);
           }
         } else if (data.event === 'STATUS_NORMAL') {
           setRelay(false);
